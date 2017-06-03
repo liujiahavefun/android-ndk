@@ -48,6 +48,7 @@ TickContext g_ctx;
  *
  *   hello-jniCallback/app/src/main/java/com/example/hellojnicallback/MainActivity.java
  */
+//liujia: 这个是JNI导出的函数，用于Java主动动用JNI，并且返回一个Java String类型返回值(JNI看到的是返回一个jstring)
 JNIEXPORT jstring JNICALL
 Java_com_example_hellojnicallback_MainActivity_stringFromJNI( JNIEnv* env, jobject thiz )
 {
