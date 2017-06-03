@@ -100,36 +100,50 @@ void queryRuntimeInfo(JNIEnv *env, jobject instance) {
     // shared lib got loaded, we just directly use them
     //    static function does not need instance, so we just need to feed
     //    class and method id to JNI
+
+    //liujia: 调用Java类的静态函数，g_ctx.jniHelperClz已经在JNI_OnLoad初始化好了
     jmethodID versionFunc = (*env)->GetStaticMethodID(
-            env, g_ctx.jniHelperClz,
-            "getBuildVersion", "()Ljava/lang/String;");
+            env,
+            g_ctx.jniHelperClz,
+            "getBuildVersion",
+            "()Ljava/lang/String;");  //liujia: 注意getBuildVersion()是不接受参数，并且返回一个String
     if (!versionFunc) {
-        LOGE("Failed to retrieve getBuildVersion() methodID @ line %d",
-             __LINE__);
+        LOGE("Failed to retrieve getBuildVersion() methodID @ line %d", __LINE__);
         return;
     }
-    jstring buildVersion = (*env)->CallStaticObjectMethod(env,
-                                                          g_ctx.jniHelperClz, versionFunc);
+
+    //liujia: 调用静态函数getBuildVersion，GetStringUTFChars用于将静态函数返回的String转为jni里的const char*
+    jstring buildVersion = (*env)->CallStaticObjectMethod(env, g_ctx.jniHelperClz, versionFunc);
     const char *version = (*env)->GetStringUTFChars(env, buildVersion, NULL);
     if (!version) {
         LOGE("Unable to get version string @ line %d", __LINE__);
         return;
     }
+
+    //liujia: 这里要ReleaseStringUTFChars，应该是GetStringUTFChars分配了内存
     LOGI("Android Version - %s", version);
     (*env)->ReleaseStringUTFChars(env, buildVersion, version);
 
+    //liujia: 这里一定要DeleteLocalRef么？如果一直拿着不停调用呢？
+    //liujia: 下面的注释是不是这个意思？这个函数queryRuntimeInfo是从JNI_OnLoad调用的，并且那里调用Java类的构造函数生成了对应实例
+    //liujia: 这里如果不释放，那个生成的实例就无法释放？
+    //liujia: 可是那里本来也没释放啊，我感觉不释放也没什么
     // we are called from JNI_OnLoad, so got to release LocalRef to avoid leaking
     (*env)->DeleteLocalRef(env, buildVersion);
 
+    //liujia: 调用Java类的非静态函数
     // Query available memory size from a non-static public function
     // we need use an instance of JniHelper class to call JNI
-    jmethodID memFunc = (*env)->GetMethodID(env, g_ctx.jniHelperClz,
-                                            "getRuntimeMemorySize", "()J");
+    jmethodID memFunc = (*env)->GetMethodID(env,
+                                            g_ctx.jniHelperClz,
+                                            "getRuntimeMemorySize",
+                                            "()J");
     if (!memFunc) {
-        LOGE("Failed to retrieve getRuntimeMemorySize() methodID @ line %d",
-             __LINE__);
+        LOGE("Failed to retrieve getRuntimeMemorySize() methodID @ line %d", __LINE__);
         return;
     }
+
+    //liujia:调用非静态函数时，要有对应的instance参数，即类实例
     jlong result = (*env)->CallLongMethod(env, instance, memFunc);
     LOGI("Runtime free memory size: %lld", result);
     (void)result;  // silence the compiler warning
@@ -146,6 +160,8 @@ void queryRuntimeInfo(JNIEnv *env, jobject instance) {
  *     we rely on system to free all global refs when it goes away;
  *     the pairing function JNI_OnUnload() never gets called at all.
  */
+//liujia: 这个函数在System.LoadLibrary执行的时候，即加载此.so文件时被调用，通常做点.so内的全局初始化工作
+//liujia: 我们在这里初始化全局的g_ctx，保存传入的JavaVM*
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     JNIEnv* env;
     memset(&g_ctx, 0, sizeof(g_ctx));
@@ -155,15 +171,15 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
         return JNI_ERR; // JNI version not supported.
     }
 
-    jclass  clz = (*env)->FindClass(env,
-                                    "com/example/hellojnicallback/JniHandler");
+    //liujia: 通过全路径的包名找到java的class，注意用NewGlobalRef处理一下再保存
+    jclass  clz = (*env)->FindClass(env, "com/example/hellojnicallback/JniHandler");
     g_ctx.jniHelperClz = (*env)->NewGlobalRef(env, clz);
 
-    jmethodID  jniHelperCtor = (*env)->GetMethodID(env, g_ctx.jniHelperClz,
-                                                   "<init>", "()V");
-    jobject    handler = (*env)->NewObject(env, g_ctx.jniHelperClz,
-                                           jniHelperCtor);
+    //liujia: 找到JniHandler类的构造函数，并且通过NewObject构造出此类(我自己的理解)，再通过NewGlobalRef保存此引用为g_ctx.jniHelperObj
+    jmethodID  jniHelperCtor = (*env)->GetMethodID(env, g_ctx.jniHelperClz, "<init>", "()V");
+    jobject    handler = (*env)->NewObject(env, g_ctx.jniHelperClz, jniHelperCtor);
     g_ctx.jniHelperObj = (*env)->NewGlobalRef(env, handler);
+
     queryRuntimeInfo(env, g_ctx.jniHelperObj);
 
     g_ctx.done = 0;
@@ -176,8 +192,9 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
  * JNI allow us to call this function via an instance even it is
  * private function.
  */
-void   sendJavaMsg(JNIEnv *env, jobject instance,
-                   jmethodID func,const char* msg) {
+//liujia: 辅助函数，方便向Java的某个类的非static函数，发送String消息(调用其接受一个String并且返回Void的函数而已)
+void   sendJavaMsg(JNIEnv *env, jobject instance, jmethodID func, const char* msg) {
+    //liujia: Java函数返回的String(jstring)，都要用完后DeleteLocalRef释放
     jstring javaMsg = (*env)->NewStringUTF(env, msg);
     (*env)->CallVoidMethod(env, instance, func, javaMsg);
     (*env)->DeleteLocalRef(env, javaMsg);
@@ -192,6 +209,9 @@ void*  UpdateTicks(void* context) {
     TickContext *pctx = (TickContext*) context;
     JavaVM *javaVM = pctx->javaVM;
     JNIEnv *env;
+
+    //liujia: 这里如此处理释放意味着每次函数调用传入的JNIEnv是否不能保存下来？
+    //liujia: 同时，每个JNIEnv是绑定到一个线程的？
     jint res = (*javaVM)->GetEnv(javaVM, (void**)&env, JNI_VERSION_1_6);
     if (res != JNI_OK) {
         res = (*javaVM)->AttachCurrentThread(javaVM, &env, NULL);
@@ -201,15 +221,17 @@ void*  UpdateTicks(void* context) {
         }
     }
 
-    jmethodID statusId = (*env)->GetMethodID(env, pctx->jniHelperClz,
+    jmethodID statusId = (*env)->GetMethodID(env,
+                                             pctx->jniHelperClz,
                                              "updateStatus",
                                              "(Ljava/lang/String;)V");
-    sendJavaMsg(env, pctx->jniHelperObj, statusId,
-                "TickerThread status: initializing...");
+    sendJavaMsg(env, pctx->jniHelperObj, statusId, "TickerThread status: initializing...");
 
     // get mainActivity updateTimer function
-    jmethodID timerId = (*env)->GetMethodID(env, pctx->mainActivityClz,
-                                            "updateTimer", "()V");
+    jmethodID timerId = (*env)->GetMethodID(env,
+                                            pctx->mainActivityClz,
+                                            "updateTimer",
+                                            "()V");
 
     struct timeval beginTime, curTime, usedTime, leftTime;
     const struct timeval kOneSecond = {
@@ -217,8 +239,8 @@ void*  UpdateTicks(void* context) {
             (__kernel_suseconds_t) 0
     };
 
-    sendJavaMsg(env, pctx->jniHelperObj, statusId,
-                "TickerThread status: start ticking ...");
+    sendJavaMsg(env, pctx->jniHelperObj, statusId, "TickerThread status: start ticking ...");
+
     while(1) {
         gettimeofday(&beginTime, NULL);
         pthread_mutex_lock(&pctx->lock);
@@ -242,13 +264,13 @@ void*  UpdateTicks(void* context) {
         if (sleepTime.tv_sec <= 1) {
             nanosleep(&sleepTime, NULL);
         } else {
-            sendJavaMsg(env, pctx->jniHelperObj, statusId,
-                        "TickerThread error: processing too long!");
+            sendJavaMsg(env, pctx->jniHelperObj, statusId, "TickerThread error: processing too long!");
         }
     }
 
-    sendJavaMsg(env, pctx->jniHelperObj, statusId,
-                "TickerThread status: ticking stopped");
+    sendJavaMsg(env, pctx->jniHelperObj, statusId, "TickerThread status: ticking stopped");
+
+    //liujia: 这里为何要DetachCurrentThread？函数开始的时候有个AttachCurrentThread
     (*javaVM)->DetachCurrentThread(javaVM);
     return context;
 }
@@ -258,6 +280,7 @@ void*  UpdateTicks(void* context) {
  */
 JNIEXPORT void JNICALL
 Java_com_example_hellojnicallback_MainActivity_startTicks(JNIEnv *env, jobject instance) {
+    //liujia: pthread的东东要再熟悉熟悉...
     pthread_t       threadInfo_;
     pthread_attr_t  threadAttr_;
 
@@ -266,6 +289,8 @@ Java_com_example_hellojnicallback_MainActivity_startTicks(JNIEnv *env, jobject i
 
     pthread_mutex_init(&g_ctx.lock, NULL);
 
+    //liujia: 这个JNI函数是从Java中调用的，所以第二个参数对应调用的Java的类实例？
+    //liujia: 剩下的是套路，还是要先得到class然后再NewGlobalRef得到引用，不能直接保存这个instance
     jclass clz = (*env)->GetObjectClass(env, instance);
     g_ctx.mainActivityClz = (*env)->NewGlobalRef(env, clz);
     g_ctx.mainActivityObj = (*env)->NewGlobalRef(env, instance);
@@ -287,6 +312,7 @@ Java_com_example_hellojnicallback_MainActivity_StopTicks(JNIEnv *env, jobject in
     pthread_mutex_unlock(&g_ctx.lock);
 
     // waiting for ticking thread to flip the done flag
+    //liujia: linux中精确sleep
     struct timespec sleepTime;
     memset(&sleepTime, 0, sizeof(sleepTime));
     sleepTime.tv_nsec = 100000000;
@@ -295,6 +321,7 @@ Java_com_example_hellojnicallback_MainActivity_StopTicks(JNIEnv *env, jobject in
     }
 
     // release object we allocated from StartTicks() function
+    //liujija: 这里记得DeleteGlobalRef，之前在startTicks保存的
     (*env)->DeleteGlobalRef(env, g_ctx.mainActivityClz);
     (*env)->DeleteGlobalRef(env, g_ctx.mainActivityObj);
     g_ctx.mainActivityObj = NULL;
